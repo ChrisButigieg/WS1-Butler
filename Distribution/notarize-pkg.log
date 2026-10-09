@@ -1,0 +1,12 @@
+Successfully downloaded submission log
+  id: 3be12a32-fff3-4fcb-94a6-756f9e37bf14
+  location: /Users/chrisbutigieg/Library/Developer/Xcode/UntitledProjects/Untitled Project/Distribution/pkg-notary-log.json
+Final status: Accepted
+Processing: /Users/chrisbutigieg/Library/Developer/Xcode/UntitledProjects/Untitled Project/Distribution/WS1-Butler-1.0.pkg
+Processing: /Users/chrisbutigieg/Library/Developer/Xcode/UntitledProjects/Untitled Project/Distribution/WS1-Butler-1.0.pkg
+The staple and validate action worked!
+Processing: /Users/chrisbutigieg/Library/Developer/Xcode/UntitledProjects/Untitled Project/Distribution/WS1-Butler-1.0.pkg
+The validate action worked!
+WS1-Butler-1.0.pkg: accepted
+source=Notarized Developer ID
+PKG FINALIZED: /Users/chrisbutigieg/Library/Developer/Xcode/UntitledProjects/Untitled Project/Distribution/WS1-Butler-1.0.pkg

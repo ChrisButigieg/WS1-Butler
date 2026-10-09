@@ -1,0 +1,30 @@
+{
+  "logFormatVersion": 1,
+  "jobId": "3be12a32-fff3-4fcb-94a6-756f9e37bf14",
+  "status": "Accepted",
+  "statusSummary": "Ready for distribution",
+  "statusCode": 0,
+  "archiveFilename": "WS1-Butler-1.0.pkg",
+  "uploadDate": "2026-10-09T02:17:53.452Z",
+  "sha256": "7986e212a4a8a6a6ad0e5afe779200a2d45dc6d845ea6978f1e8bbaecb128de9",
+  "ticketContents": [
+    {
+      "path": "WS1-Butler-1.0.pkg/mil.afrc.ws1butler.pkg Contents/Payload/Applications/WS1 Butler.app",
+      "digestAlgorithm": "SHA-256",
+      "cdhash": "8f32f45bfafdf9eb33cc744009dcd70c21d16a73",
+      "arch": "arm64"
+    },
+    {
+      "path": "WS1-Butler-1.0.pkg/mil.afrc.ws1butler.pkg Contents/Payload/Applications/WS1 Butler.app/Contents/MacOS/WS1 Butler",
+      "digestAlgorithm": "SHA-256",
+      "cdhash": "8f32f45bfafdf9eb33cc744009dcd70c21d16a73",
+      "arch": "arm64"
+    },
+    {
+      "path": "WS1-Butler-1.0.pkg",
+      "digestAlgorithm": "SHA-1",
+      "cdhash": "2586417b177f306dae368ffebaccd7a18a336316"
+    }
+  ],
+  "issues": null
+}

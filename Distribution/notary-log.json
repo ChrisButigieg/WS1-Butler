@@ -1,0 +1,25 @@
+{
+  "logFormatVersion": 1,
+  "jobId": "b1004949-5572-4d35-9150-37f196b48edb",
+  "status": "Accepted",
+  "statusSummary": "Ready for distribution",
+  "statusCode": 0,
+  "archiveFilename": "WS1Butler-notarize.zip",
+  "uploadDate": "2026-10-09T00:56:58.267Z",
+  "sha256": "34beae44e50b39af4210a0dee49a898a768f3123e4d345f4643e32413603495c",
+  "ticketContents": [
+    {
+      "path": "WS1Butler-notarize.zip/WS1 Butler.app",
+      "digestAlgorithm": "SHA-256",
+      "cdhash": "8f32f45bfafdf9eb33cc744009dcd70c21d16a73",
+      "arch": "arm64"
+    },
+    {
+      "path": "WS1Butler-notarize.zip/WS1 Butler.app/Contents/MacOS/WS1 Butler",
+      "digestAlgorithm": "SHA-256",
+      "cdhash": "8f32f45bfafdf9eb33cc744009dcd70c21d16a73",
+      "arch": "arm64"
+    }
+  ],
+  "issues": null
+}
