@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Credentials — never commit
+*.p8
+*.p12
+*.mobileprovision
