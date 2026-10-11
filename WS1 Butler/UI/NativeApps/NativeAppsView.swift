@@ -335,7 +335,7 @@ private struct OptionsPanel: View {
         HUDPanel("Mission Parameters") {
             VStack(alignment: .leading, spacing: 12) {
                 option("Retire previous version", "After the new version is published.", $options.retirePreviousVersion)
-                option("Review before publish", "Pause to verify assignments & app config.", $options.reviewBeforePublish)
+                option("Review before publish", "Stage without assignments; verify before publishing or retiring.", $options.reviewBeforePublish)
                 option("Auto-restore assignments", "Re-apply the previous version's assignments if UEM did not carry them over exactly.", $options.restoreAssignmentsIfMissing)
                 option("Create new apps", "Upload even when the app doesn't exist on a server yet.", $options.allowNewApplications)
             }

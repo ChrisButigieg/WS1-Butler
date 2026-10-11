@@ -93,6 +93,75 @@ struct DeploymentEngineTests {
         #expect(mock.publishedRules.isEmpty)
     }
 
+    @Test("Partial create acknowledgement is resolved before operator review")
+    func resolvesPartialCreateBeforeReview() async {
+        let mock = MockUEMService.populated(bundleID: bundleID)
+        var indexedApp = mock.newAppTemplate
+        indexedApp.bundleID = bundleID
+        // UEM builds can index CFBundleVersion before CFBundleShortVersionString.
+        indexedApp.actualFileVersion = "42"
+        indexedApp.appVersion = "1.1.0"
+        mock.newAppTemplate = indexedApp
+        mock.beginInstallResponseOverride = UEMApplication()
+
+        let engine = DeploymentEngine(log: ActivityLog()) { _ in mock }
+        let target = DeploymentTarget(server: TestSupport.server())
+        let task = Task {
+            await engine.run(
+                item: TestSupport.queueItem(bundleID: bundleID),
+                target: target,
+                options: DeploymentOptions()
+            )
+        }
+
+        await TestSupport.waitUntil { target.status == .awaitingReview }
+
+        #expect(target.newApp?.id == 2002)
+        #expect(target.newApp?.uuid == "new-app-uuid")
+        #expect(mock.calls.filter { $0 == "findInternalApps" }.count == 2)
+        #expect(mock.publishedRules.isEmpty)
+
+        target.reviewGate?.resolve(.skipPublish)
+        await task.value
+
+        if case .completedWithWarnings = target.status {} else {
+            Issue.record("Expected a completed deployment that awaits explicit publishing")
+        }
+        #expect(mock.retiredAppIDs.isEmpty)
+    }
+
+    @Test("UUID-only create acknowledgement is indexed before operator review")
+    func resolvesUUIDOnlyCreateBeforeReview() async {
+        let mock = MockUEMService.populated(bundleID: bundleID)
+        var indexedApp = mock.newAppTemplate
+        indexedApp.bundleID = bundleID
+        indexedApp.actualFileVersion = "1.1.0"
+        mock.newAppTemplate = indexedApp
+        mock.beginInstallResponseOverride = UEMApplication(uuid: "new-app-uuid")
+
+        let engine = DeploymentEngine(log: ActivityLog()) { _ in mock }
+        let target = DeploymentTarget(server: TestSupport.server())
+        let task = Task {
+            await engine.run(
+                item: TestSupport.queueItem(bundleID: bundleID),
+                target: target,
+                options: DeploymentOptions()
+            )
+        }
+
+        await TestSupport.waitUntil { target.status == .awaitingReview }
+
+        #expect(target.newApp?.id == 2002)
+        #expect(target.newApp?.uuid == "new-app-uuid")
+        #expect(mock.calls.filter { $0 == "findInternalApps" }.count == 2)
+        #expect(mock.publishedRules.isEmpty)
+
+        target.reviewGate?.resolve(.skipPublish)
+        await task.value
+
+        #expect(mock.retiredAppIDs.isEmpty)
+    }
+
     @Test("Stops after authentication failure")
     func authFailure() async {
         let mock = MockUEMService.populated(bundleID: bundleID)
@@ -144,6 +213,10 @@ struct DeploymentEngineTests {
 
         await TestSupport.waitUntil { target.status == .awaitingReview }
         #expect(mock.publishedRules.isEmpty)
+        let request = try #require(mock.beginInstallRequests.first)
+        #expect(!request.carryOverAssignments)
+        #expect(target.carriedRule?.isEmpty == true)
+        #expect(target.workingRule?.assignments.count == 2)
         var rule = try #require(target.workingRule)
         rule.setConfigurationValue("https://api.prod.example.mil", forKey: "ServerURL", assignmentIndex: 0)
         target.reviewGate?.resolve(.publish(rule))
@@ -188,6 +261,25 @@ struct DeploymentEngineTests {
         #expect(target.state(of: .publish) == .skipped)
         #expect(target.state(of: .retire) == .skipped)
         #expect(mock.retiredAppIDs.isEmpty)
+    }
+
+    @Test("Review: skipping publish never retires an unassigned previous version")
+    func reviewSkipPublishWithEmptyRule() async {
+        let mock = MockUEMService.populated(bundleID: bundleID)
+        mock.rules["old-app-uuid"] = .empty
+        let engine = DeploymentEngine(log: ActivityLog()) { _ in mock }
+        let target = DeploymentTarget(server: TestSupport.server())
+        let task = Task {
+            await engine.run(item: TestSupport.queueItem(bundleID: bundleID), target: target, options: DeploymentOptions())
+        }
+
+        await TestSupport.waitUntil { target.status == .awaitingReview }
+        target.reviewGate?.resolve(.skipPublish)
+        await task.value
+
+        #expect(mock.publishedRules.isEmpty)
+        #expect(mock.retiredAppIDs.isEmpty)
+        #expect(target.state(of: .retire) == .skipped)
     }
 
     @Test("Cancelling the task while in review aborts safely")

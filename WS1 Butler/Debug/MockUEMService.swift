@@ -12,6 +12,8 @@ final class MockUEMService: UEMService {
     var rules: [String: AssignmentRuleDocument] = [:]
     var smartGroups: [String: String] = [:]
     var newAppTemplate = UEMApplication(entityID: .init(value: 2002), uuid: "new-app-uuid")
+    /// Simulates a successful create response that omits the new application's identity.
+    var beginInstallResponseOverride: UEMApplication?
     /// Rule UEM "carries over" to the newly created version. `nil` copies the previous rule.
     var carriedRuleOverride: AssignmentRuleDocument?
 
@@ -52,6 +54,7 @@ final class MockUEMService: UEMService {
         try await pause()
         if appUUID == newAppTemplate.uuid, rules[appUUID] == nil {
             if let carriedRuleOverride { return carriedRuleOverride }
+            guard beginInstallRequests.last?.carryOverAssignments == true else { return .empty }
             // Mimic CarryOverAssignments: the previous active version's rule.
             let previousUUID = existingApps.first(where: \.isActive)?.uuid ?? ""
             return rules[previousUUID] ?? .empty
@@ -94,6 +97,12 @@ final class MockUEMService: UEMService {
         var app = newAppTemplate
         app.applicationName = request.applicationName
         app.status = "Active"
+        if let beginInstallResponseOverride {
+            if !existingApps.contains(where: { $0.id == app.id }) {
+                existingApps.append(app)
+            }
+            return beginInstallResponseOverride
+        }
         return app
     }
 

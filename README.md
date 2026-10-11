@@ -27,7 +27,7 @@ in parallel across servers:
 2. Find the currently active version by bundle ID
 3. Snapshot its assignments, smart groups, delivery method, and managed app config
 4. Upload the IPA
-5. Create the new version with `CarryOverAssignments`
+5. Create a staged new version; assignments are carried over only for an explicit auto-publish deployment
 6. Verify the carried-over assignments/app config against the snapshot (optionally auto-restore)
 7. *Optional:* pause for operator review and app config edits
 8. Publish the assignments

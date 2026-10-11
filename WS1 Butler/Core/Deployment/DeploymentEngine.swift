@@ -6,7 +6,7 @@ import Foundation
 /// 2. Locate the currently active internal app with the same bundle ID.
 /// 3. Snapshot that version's assignment rule (smart groups, delivery, app config).
 /// 4. Upload the IPA as a blob.
-/// 5. Create the new version via `begininstall` with `CarryOverAssignments`.
+/// 5. Create the new version; carry assignments only for an explicit auto-publish deployment.
 /// 6. Verify the carried-over rule against the snapshot (optionally restoring it).
 /// 7. Optionally pause for operator review / app config edits.
 /// 8. Publish the assignment rule.
@@ -89,6 +89,9 @@ final class DeploymentEngine {
                           options: DeploymentOptions, source: String) async throws {
         let ipa = item.metadata
         let server = target.server
+        // Carrying assignments during creation can make the new version available immediately.
+        // When review is enabled, stage the snapshot locally and PUT it only after approval.
+        let carryOverAssignments = !options.reviewBeforePublish
 
         try await step(.authenticate, target, source) {
             let group = try await service.testConnection()
@@ -135,16 +138,34 @@ final class DeploymentEngine {
 
         try await step(.create, target, source) {
             guard let blobID else { throw UEMError.unexpectedResponse("missing blob ID") }
-            let request = makeBeginInstallRequest(blobID: blobID, item: item, previous: target.previousApp, server: server)
+            let request = makeBeginInstallRequest(
+                blobID: blobID,
+                item: item,
+                previous: target.previousApp,
+                server: server,
+                carryOverAssignments: carryOverAssignments
+            )
             let created: UEMApplication
             do {
                 created = try await service.beginInstall(request)
             } catch {
-                // Do not leave an orphaned multi-hundred-megabyte blob behind.
-                try? await service.deleteBlob(id: blobID)
+                // A transport or decoding failure can occur after UEM accepts the request. Only
+                // delete the blob after a definite client-side rejection; otherwise preserve it
+                // so UEM's asynchronous create is not interrupted.
+                if let error = error as? UEMError,
+                   let status = error.statusCode,
+                   (400..<500).contains(status) {
+                    try? await service.deleteBlob(id: blobID)
+                }
                 throw error
             }
-            target.newApp = try await resolveNewApp(created, service: service, ipa: ipa, previous: target.previousApp)
+            target.newApp = try await resolveNewApp(
+                created,
+                service: service,
+                ipa: ipa,
+                previous: target.previousApp,
+                target: target
+            )
             return .done("Created version \(target.newApp?.displayVersion ?? ipa.shortVersion) (ID \(target.newApp?.id ?? 0))")
         }
 
@@ -155,6 +176,13 @@ final class DeploymentEngine {
             target.workingRule = carried
 
             guard let expected = target.expectedRule else { return .skipped("No previous version to compare") }
+            if !carryOverAssignments {
+                target.workingRule = Self.mergedForRestore(expected: expected, carried: carried)
+                if expected.isEmpty {
+                    return .done("No previous assignments to stage for review")
+                }
+                return .done("Assignments staged for operator review")
+            }
             target.discrepancies = AssignmentComparator.compare(expected: expected, actual: carried)
             if target.discrepancies.isEmpty {
                 return .done("Assignments and app config match previous version")
@@ -209,6 +237,9 @@ final class DeploymentEngine {
         try await step(.retire, target, source) {
             guard options.retirePreviousVersion else { return .skipped("Retire disabled") }
             guard let previousID = target.previousApp?.id else { return .skipped("No previous version") }
+            guard publishApproved else {
+                return .skipped("Skipped by operator — previous version kept active")
+            }
             guard published || target.expectedRule?.isEmpty == true else {
                 return .skipped("New version not published — previous version kept active")
             }
@@ -245,7 +276,7 @@ final class DeploymentEngine {
     // MARK: - Helpers
 
     func makeBeginInstallRequest(blobID: Int, item: DeploymentQueueItem, previous: UEMApplication?,
-                                 server: ServerProfile) -> BeginInstallRequest {
+                                 server: ServerProfile, carryOverAssignments: Bool = true) -> BeginInstallRequest {
         let ipa = item.metadata
         let previousModels = previous?.supportedModels?.model ?? []
         let models = previousModels.isEmpty
@@ -262,21 +293,79 @@ final class DeploymentEngine {
             locationGroupID: server.organizationGroupID,
             fileName: item.fileName,
             description: previous?.description,
-            carryOverAssignments: true
+            carryOverAssignments: carryOverAssignments
         )
     }
 
-    /// `begininstall` normally returns the new app's ID and UUID; if not, look it up.
+    /// `begininstall` may return the complete entity, a partial acknowledgement, or no body.
+    /// UEM can also take a few seconds to index the new version, so resolve it deterministically
+    /// before touching assignments or offering the review checkpoint.
     private func resolveNewApp(_ created: UEMApplication, service: UEMService, ipa: IPAMetadata,
-                               previous: UEMApplication?) async throws -> UEMApplication {
-        if created.uuid?.isEmpty == false, created.id != nil { return created }
-        let apps = try await service.findInternalApps(bundleID: ipa.bundleIdentifier)
-        let candidates = apps.filter { $0.id != previous?.id }
-        if let match = candidates.first(where: { $0.id == created.id && created.id != nil })
-            ?? candidates.first(where: { VersionComparator.compare($0.displayVersion, ipa.shortVersion) == .orderedSame }) {
-            return match
+                               previous: UEMApplication?, target: DeploymentTarget) async throws -> UEMApplication {
+        let responseMatchesBundle = created.bundleID.map {
+            $0.caseInsensitiveCompare(ipa.bundleIdentifier) == .orderedSame
+        } ?? true
+        // A full entity can be used immediately. A UUID-only acknowledgement still needs a
+        // catalog round-trip so we do not race UEM's asynchronous application indexing.
+        if responseMatchesBundle, (created.id ?? 0) > 0, Self.canReview(created) {
+            return created
         }
-        throw UEMError.unexpectedResponse("could not locate the newly created version")
+
+        // A large IPA can take materially longer than the create acknowledgement to appear in
+        // the catalog. Poll for just under a minute before declaring the accepted request lost.
+        let maximumAttempts = 12
+        for attempt in 1...maximumAttempts {
+            try Task.checkCancellation()
+            let apps = try await service.findInternalApps(bundleID: ipa.bundleIdentifier)
+            let candidates = apps.filter {
+                $0.id != previous?.id &&
+                ($0.bundleID?.caseInsensitiveCompare(ipa.bundleIdentifier) == .orderedSame || $0.bundleID == nil)
+            }
+
+            if let createdID = created.id,
+               let match = candidates.first(where: { $0.id == createdID && Self.canReview($0) }) {
+                return match
+            }
+            if let createdUUID = created.uuid,
+               let match = candidates.first(where: {
+                   $0.uuid?.caseInsensitiveCompare(createdUUID) == .orderedSame && Self.canReview($0)
+               }) {
+                return match
+            }
+
+            let versionMatches = candidates.filter {
+                Self.matchesNewVersion($0, ipa: ipa) && Self.canReview($0)
+            }
+            if versionMatches.count == 1, let match = versionMatches.first {
+                return match
+            }
+            if versionMatches.count > 1 {
+                throw UEMError.unexpectedResponse(
+                    "multiple new versions match \(ipa.shortVersion); resolve the duplicate in UEM before retrying"
+                )
+            }
+
+            guard attempt < maximumAttempts else { break }
+            target.detail = "Waiting for UEM to index the new version (\(attempt)/\(maximumAttempts))…"
+            try await Task.sleep(for: .seconds(min(attempt, 5)))
+        }
+
+        throw UEMError.unexpectedResponse(
+            "UEM accepted the create request but the new version was not found after \(maximumAttempts) checks"
+        )
+    }
+
+    private static func canReview(_ app: UEMApplication) -> Bool {
+        app.uuid?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private static func matchesNewVersion(_ app: UEMApplication, ipa: IPAMetadata) -> Bool {
+        [app.actualFileVersion, app.appVersion]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .contains {
+                VersionComparator.compare($0, ipa.shortVersion) == .orderedSame ||
+                VersionComparator.compare($0, ipa.buildVersion) == .orderedSame
+            }
     }
 
     /// Takes the previous version's rule (identifiers stripped) but keeps the new rule's

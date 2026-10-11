@@ -1,11 +1,55 @@
 import Foundation
 
 /// Subset of the UEM `ApplicationEntity` / `InternalApplicationEntity` we rely on.
-/// Every field is optional because UEM omits empty values.
-nonisolated struct UEMApplication: Codable, Hashable, Sendable {
+///
+/// UEM returns this entity from more than one endpoint and its optional fields are not
+/// represented consistently across releases. In particular, `Id` may be a number,
+/// string, or `{ "Value": number }` object, and `begininstall` can wrap the entity.
+nonisolated struct UEMApplication: Decodable, Hashable, Sendable {
     nonisolated struct EntityID: Codable, Hashable, Sendable {
         var value: Int?
+
+        init(value: Int? = nil) {
+            self.value = value
+        }
+
         enum CodingKeys: String, CodingKey { case value = "Value" }
+
+        init(from decoder: Decoder) throws {
+            let response = try JSONValue(from: decoder)
+            guard let value = Self.integer(from: response) else {
+                throw DecodingError.typeMismatch(
+                    EntityID.self,
+                    .init(codingPath: decoder.codingPath, debugDescription: "Expected an integer UEM entity ID.")
+                )
+            }
+            self.value = value
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(value, forKey: .value)
+        }
+
+        private static func integer(from input: JSONValue) -> Int? {
+            if let number = input.intValue { return number }
+            guard let object = input.objectValue else { return nil }
+            for key in ["Value", "Id", "ID", "ApplicationId", "ApplicationID"] {
+                if let nested = value([key], in: object), let number = integer(from: nested) {
+                    return number
+                }
+            }
+            return nil
+        }
+
+        private static func value(_ keys: [String], in object: [String: JSONValue]) -> JSONValue? {
+            for key in keys {
+                if let match = object.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame }) {
+                    return match.value
+                }
+            }
+            return nil
+        }
     }
 
     nonisolated struct SupportedModels: Codable, Hashable, Sendable {
@@ -37,21 +81,65 @@ nonisolated struct UEMApplication: Codable, Hashable, Sendable {
     var entityID: EntityID?
     var uuid: String?
 
-    enum CodingKeys: String, CodingKey {
-        case applicationName = "ApplicationName"
-        case bundleID = "BundleId"
-        case appVersion = "AppVersion"
-        case actualFileVersion = "ActualFileVersion"
-        case status = "Status"
-        case platform = "Platform"
-        case pushMode = "PushMode"
-        case locationGroupID = "LocationGroupId"
-        case assignedDeviceCount = "AssignedDeviceCount"
-        case installedDeviceCount = "InstalledDeviceCount"
-        case supportedModels = "SupportedModels"
-        case description = "Description"
-        case entityID = "Id"
-        case uuid = "Uuid"
+    init(applicationName: String? = nil, bundleID: String? = nil, appVersion: String? = nil,
+         actualFileVersion: String? = nil, status: String? = nil, platform: Int? = nil,
+         pushMode: String? = nil, locationGroupID: Int? = nil, assignedDeviceCount: Int? = nil,
+         installedDeviceCount: Int? = nil, supportedModels: SupportedModels? = nil,
+         description: String? = nil, entityID: EntityID? = nil, uuid: String? = nil) {
+        self.applicationName = applicationName
+        self.bundleID = bundleID
+        self.appVersion = appVersion
+        self.actualFileVersion = actualFileVersion
+        self.status = status
+        self.platform = platform
+        self.pushMode = pushMode
+        self.locationGroupID = locationGroupID
+        self.assignedDeviceCount = assignedDeviceCount
+        self.installedDeviceCount = installedDeviceCount
+        self.supportedModels = supportedModels
+        self.description = description
+        self.entityID = entityID
+        self.uuid = uuid
+    }
+
+    init(from decoder: Decoder) throws {
+        try self.init(responseValue: JSONValue(from: decoder))
+    }
+
+    /// Parses the direct response and the entity envelopes returned by UEM endpoints.
+    init(responseValue: JSONValue) throws {
+        guard let object = Self.applicationObject(in: responseValue) else {
+            if responseValue.arrayValue?.isEmpty == true {
+                self.init()
+                return
+            }
+            if case .null = responseValue {
+                self.init()
+                return
+            }
+            throw DecodingError.typeMismatch(
+                UEMApplication.self,
+                .init(codingPath: [], debugDescription: "Expected an application object or envelope.")
+            )
+        }
+
+        let models = Self.deviceModels(from: Self.value(["SupportedModels"], in: object))
+        self.init(
+            applicationName: Self.string(from: Self.value(["ApplicationName", "Name"], in: object)),
+            bundleID: Self.string(from: Self.value(["BundleId", "BundleID", "BundleIdentifier"], in: object)),
+            appVersion: Self.string(from: Self.value(["AppVersion", "Version"], in: object)),
+            actualFileVersion: Self.string(from: Self.value(["ActualFileVersion", "FileVersion"], in: object)),
+            status: Self.string(from: Self.value(["Status", "ApplicationStatus"], in: object)),
+            platform: Self.integer(from: Self.value(["Platform", "PlatformId"], in: object)),
+            pushMode: Self.string(from: Self.value(["PushMode"], in: object)),
+            locationGroupID: Self.integer(from: Self.value(["LocationGroupId", "LocationGroupID"], in: object)),
+            assignedDeviceCount: Self.integer(from: Self.value(["AssignedDeviceCount"], in: object)),
+            installedDeviceCount: Self.integer(from: Self.value(["InstalledDeviceCount"], in: object)),
+            supportedModels: models.map(SupportedModels.init(model:)),
+            description: Self.string(from: Self.value(["Description"], in: object)),
+            entityID: Self.integer(from: Self.value(["Id", "ID", "ApplicationId"], in: object)).map(EntityID.init(value:)),
+            uuid: Self.string(from: Self.value(["Uuid", "UUID", "ApplicationUuid"], in: object))
+        )
     }
 
     var id: Int? { entityID?.value }
@@ -60,30 +148,214 @@ nonisolated struct UEMApplication: Codable, Hashable, Sendable {
 
     /// Version shown in the console's "App Version" column.
     var displayVersion: String { actualFileVersion ?? appVersion ?? "?" }
-}
 
-nonisolated struct UEMApplicationSearchResult: Codable, Sendable {
-    var application: [UEMApplication]?
-    var total: Int?
+    private static func applicationObject(in payload: JSONValue) -> [String: JSONValue]? {
+        switch payload {
+        case .object(let object):
+            if hasApplicationFields(object) { return object }
+            for key in [
+                "Application", "InternalApplication", "ApplicationEntity", "InternalApplicationEntity",
+                "Entity", "Result", "Data", "Value"
+            ] {
+                if let nested = value([key], in: object), let resolved = applicationObject(in: nested) {
+                    return resolved
+                }
+            }
+            // A successful asynchronous create can contain only a status/message. Returning
+            // this partial entity lets the deployment engine safely locate the new app.
+            return object
+        case .array(let values):
+            let candidates = values.compactMap { applicationObject(in: $0) }
+            return candidates.first(where: hasApplicationFields) ?? candidates.first
+        case .string(let value):
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let identifier = integer(from: .string(trimmed)) {
+                return ["Id": .int(Int64(identifier))]
+            }
+            // A few UEM builds acknowledge an asynchronous create with just its UUID.
+            // Restrict this to real UUIDs so a status message cannot be mistaken for an app.
+            if UUID(uuidString: trimmed) != nil {
+                return ["Uuid": .string(trimmed)]
+            }
+            return nil
+        default:
+            guard let identifier = integer(from: payload) else { return nil }
+            return ["Id": .int(Int64(identifier))]
+        }
+    }
 
-    enum CodingKeys: String, CodingKey {
-        case application = "Application"
-        case total = "Total"
+    private static func hasApplicationFields(_ object: [String: JSONValue]) -> Bool {
+        value([
+            "Id", "Uuid", "ApplicationName", "BundleId", "BundleIdentifier", "AppVersion", "ApplicationId"
+        ], in: object) != nil
+    }
+
+    private static func value(_ keys: [String], in object: [String: JSONValue]) -> JSONValue? {
+        for key in keys {
+            if let match = object.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame }) {
+                return match.value
+            }
+        }
+        return nil
+    }
+
+    private static func string(from value: JSONValue?) -> String? {
+        value?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func integer(from input: JSONValue?) -> Int? {
+        guard let input else { return nil }
+        if let number = input.intValue { return number }
+        guard let object = input.objectValue else { return nil }
+        return integer(from: value(["Value", "Id", "ID"], in: object))
+    }
+
+    private static func deviceModels(from value: JSONValue?) -> [DeviceModel]? {
+        guard let value else { return nil }
+
+        let values: [JSONValue]
+        switch value {
+        case .array(let items):
+            values = items
+        case .object(let object):
+            if let models = Self.value(["Model", "Models"], in: object) {
+                values = models.arrayValue ?? [models]
+            } else {
+                values = [value]
+            }
+        default:
+            return nil
+        }
+
+        let models = values.compactMap { value -> DeviceModel? in
+            guard let object = value.objectValue else { return nil }
+            let modelID = integer(from: Self.value(["ModelId", "ModelID", "Id"], in: object))
+            let modelName = string(from: Self.value(["ModelName", "Name"], in: object))
+            guard modelID != nil || modelName != nil else { return nil }
+            return DeviceModel(modelID: modelID, modelName: modelName)
+        }
+        return models.isEmpty ? nil : models
     }
 }
 
-nonisolated struct UEMBlobResponse: Codable, Sendable {
+nonisolated struct UEMApplicationSearchResult: Decodable, Sendable {
+    var application: [UEMApplication]?
+    var total: Int?
+
+    init(from decoder: Decoder) throws {
+        let response = try JSONValue(from: decoder)
+        let catalog = try Self.catalog(from: response)
+        application = catalog.applications
+        total = catalog.total ?? application?.count
+    }
+
+    /// Search responses are normally `{ "Application": [...] }`, but some UEM releases
+    /// wrap the catalog in `Result` or `Data`, and a one-item result can be a singleton.
+    private static func catalog(from value: JSONValue) throws -> (applications: [UEMApplication]?, total: Int?) {
+        switch value {
+        case .null:
+            return ([], nil)
+        case .array(let values):
+            var applications: [UEMApplication] = []
+            for item in values {
+                let nested = try catalog(from: item)
+                if let nestedApplications = nested.applications {
+                    applications.append(contentsOf: nestedApplications)
+                }
+            }
+            return (applications, nil)
+        case .object(let object):
+            let total = integer(from: self.value(["Total", "Count"], in: object))
+            if looksLikeApplication(object) {
+                return ([try UEMApplication(responseValue: value)], total)
+            }
+            if let direct = self.value(["Application", "Applications", "Items", "Results"], in: object) {
+                let nested = try catalog(from: direct)
+                return (nested.applications, total ?? nested.total)
+            }
+            for key in ["Result", "Data", "Value", "Response"] {
+                if let nestedValue = self.value([key], in: object) {
+                    let nested = try catalog(from: nestedValue)
+                    if nested.applications != nil {
+                        return (nested.applications, total ?? nested.total)
+                    }
+                }
+            }
+            return (nil, total)
+        default:
+            return (nil, nil)
+        }
+    }
+
+    private static func looksLikeApplication(_ object: [String: JSONValue]) -> Bool {
+        value([
+            "Id", "Uuid", "ApplicationName", "BundleId", "BundleIdentifier", "AppVersion", "ApplicationId"
+        ], in: object) != nil
+    }
+
+    private static func integer(from value: JSONValue?) -> Int? {
+        guard let value else { return nil }
+        if let number = value.intValue { return number }
+        guard let object = value.objectValue else { return nil }
+        return integer(from: Self.value(["Value", "Id", "ID"], in: object))
+    }
+
+    private static func value(_ keys: [String], in object: [String: JSONValue]) -> JSONValue? {
+        for key in keys {
+            if let match = object.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame }) {
+                return match.value
+            }
+        }
+        return nil
+    }
+}
+
+nonisolated struct UEMBlobResponse: Decodable, Sendable {
     var value: Int?
     var id: Int?
     var uuid: String?
 
-    enum CodingKeys: String, CodingKey {
-        case value = "Value"
-        case id
-        case uuid
+    init(from decoder: Decoder) throws {
+        let response = try JSONValue(from: decoder)
+        value = Self.integer(from: response)
+        id = nil
+        uuid = Self.string(from: response)
     }
 
     var blobID: Int? { value ?? id }
+
+    private static func integer(from input: JSONValue) -> Int? {
+        if let number = input.intValue { return number }
+        guard let object = input.objectValue else { return nil }
+        for key in ["Value", "Id", "ID", "BlobId", "BlobID", "Blob", "Result", "Data"] {
+            if let nested = value([key], in: object), let number = integer(from: nested) {
+                return number
+            }
+        }
+        return nil
+    }
+
+    private static func string(from input: JSONValue) -> String? {
+        guard let object = input.objectValue else { return nil }
+        for key in ["Uuid", "UUID", "BlobUuid", "BlobUUID", "Blob", "Result", "Data"] {
+            if let nested = value([key], in: object) {
+                if let string = nested.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty {
+                    return string
+                }
+                if let string = string(from: nested) { return string }
+            }
+        }
+        return nil
+    }
+
+    private static func value(_ keys: [String], in object: [String: JSONValue]) -> JSONValue? {
+        for key in keys {
+            if let match = object.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame }) {
+                return match.value
+            }
+        }
+        return nil
+    }
 }
 
 nonisolated struct UEMOrganizationGroup: Codable, Hashable, Sendable, Identifiable {

@@ -157,7 +157,19 @@ final class UEMClient: UEMService {
     func beginInstall(_ request: BeginInstallRequest) async throws -> UEMApplication {
         let body = try JSONEncoder().encode(request)
         let data = try await perform(.post, "/api/mam/apps/internal/begininstall", version: 1, body: body, retryable: false)
-        guard !data.isEmpty else { throw UEMError.unexpectedResponse("begininstall returned no application") }
+
+        // Some UEM builds acknowledge a successful asynchronous create with 202 No Content.
+        // The deployment engine resolves this partial result by looking up the new version.
+        let responseText = String(decoding: data, as: UTF8.self)
+        let trimmedResponse = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResponse.isEmpty else {
+            return UEMApplication()
+        }
+        // Some installations return a text/plain UUID rather than JSON. It is an unambiguous
+        // application identity, while arbitrary text still falls through to normal decoding.
+        if UUID(uuidString: trimmedResponse) != nil {
+            return UEMApplication(uuid: trimmedResponse)
+        }
         return try decode(UEMApplication.self, from: data)
     }
 

@@ -89,6 +89,31 @@ struct UEMClientTests {
         #expect(apps.first?.isActive == true)
     }
 
+    @Test("Search and organization endpoints accept nested, singleton, and primitive entity responses")
+    func flexibleCatalogResponses() async throws {
+        let transport = MockTransport()
+        var searchResponse = 0
+        transport.handler = { request in
+            if request.url?.path() == "/api/system/groups/570" {
+                return .init(200, #"{"Name":"AFRC","Id":"570"}"#)
+            }
+            defer { searchResponse += 1 }
+            if searchResponse == 0 {
+                return .init(200, #"{"Result":{"Data":{"Application":{"ApplicationName":"Mission Planner","BundleId":"mil.afrc.app","ActualFileVersion":"1.1.0","Status":"Active","Id":2002,"Uuid":"new-uuid"}}}}"#)
+            }
+            return .init(200, #"{"ApplicationName":"Mission Planner","BundleId":"mil.afrc.app","ActualFileVersion":"1.1.1","Status":"Active","Id":"2003","Uuid":"newer-uuid"}"#)
+        }
+        let client = try makeClient(transport: transport)
+
+        let group = try await client.testConnection()
+        let wrappedApps = try await client.findInternalApps(bundleID: "mil.afrc.app")
+        let singletonApps = try await client.findInternalApps(bundleID: "mil.afrc.app")
+
+        #expect(group.id == 570)
+        #expect(wrappedApps.map(\.id) == [2002])
+        #expect(singletonApps.map(\.id) == [2003])
+    }
+
     @Test("OAuth fetches one token and reuses it as a Bearer token")
     func oauthTokenReuse() async throws {
         let transport = MockTransport()
@@ -161,6 +186,61 @@ struct UEMClientTests {
         }
     }
 
+    @Test("Begin install accepts production response variants and empty acknowledgements")
+    func beginInstallResponseVariants() async throws {
+        let transport = MockTransport()
+        let responses: [MockTransport.Response] = [
+            .init(201, #"{"Id":2002,"Uuid":"new-uuid","Platform":"Apple","SupportedModels":{"Model":{"ModelId":"2","ModelName":"iPad"}}}"#),
+            .init(200, #"{"Application":{"Id":{"Value":"2003"},"Uuid":"new-uuid-2","ApplicationName":"Mission Planner","BundleIdentifier":"mil.afrc.app","ActualFileVersion":"1.1.0"}}"#),
+            .init(202),
+            .init(201, "2004"),
+            .init(201, #"{"Result":{"ApplicationEntity":{"Id":"2005","Uuid":"new-uuid-5"}}}"#),
+            .init(202, "null"),
+            .init(202, " \r\n"),
+            .init(202, "3d958f38-246e-4854-a306-189d941ab073")
+        ]
+        var responseIndex = 0
+        transport.handler = { request in
+            #expect(request.url?.path() == "/api/mam/apps/internal/begininstall")
+            defer { responseIndex += 1 }
+            return responses[responseIndex]
+        }
+
+        let client = try makeClient(transport: transport)
+        let request = BeginInstallRequest(
+            blobID: 1,
+            applicationName: "Mission Planner",
+            supportedModels: .init(model: [.init(modelID: 2, modelName: "iPad")]),
+            pushMode: "Auto",
+            locationGroupID: 570,
+            fileName: "MissionPlanner.ipa"
+        )
+
+        let directID = try await client.beginInstall(request)
+        let wrappedID = try await client.beginInstall(request)
+        let acknowledged = try await client.beginInstall(request)
+        let numericID = try await client.beginInstall(request)
+        let resultEnvelope = try await client.beginInstall(request)
+        let nullAcknowledgement = try await client.beginInstall(request)
+        let whitespaceAcknowledgement = try await client.beginInstall(request)
+        let uuidAcknowledgement = try await client.beginInstall(request)
+
+        #expect(directID.id == 2002)
+        #expect(directID.uuid == "new-uuid")
+        #expect(directID.supportedModels?.model?.first?.modelID == 2)
+        #expect(wrappedID.id == 2003)
+        #expect(wrappedID.bundleID == "mil.afrc.app")
+        #expect(wrappedID.displayVersion == "1.1.0")
+        #expect(acknowledged.id == nil)
+        #expect(acknowledged.uuid == nil)
+        #expect(numericID.id == 2004)
+        #expect(resultEnvelope.id == 2005)
+        #expect(resultEnvelope.uuid == "new-uuid-5")
+        #expect(nullAcknowledgement.id == nil)
+        #expect(whitespaceAcknowledgement.id == nil)
+        #expect(uuidAcknowledgement.uuid == "3d958f38-246e-4854-a306-189d941ab073")
+    }
+
     @Test("Transient failures on GET are retried; POSTs are never retried")
     func retryPolicy() async throws {
         let transport = MockTransport()
@@ -197,6 +277,18 @@ struct UEMClientTests {
         #expect(rawQuery.contains("fileName=My%20App%2B1.ipa"))
         #expect(rawQuery.contains("organizationGroupId=570"))
         #expect(rawQuery.contains("moduleType=Application"))
+    }
+
+    @Test("Blob upload accepts an enveloped string ID")
+    func uploadBlobResponseVariants() async throws {
+        let transport = MockTransport()
+        transport.handler = { _ in .init(201, #"{"Result":{"Value":"4243"}}"#) }
+        let client = try makeClient(transport: transport)
+        let file = try TestSupport.write(Data([1]), named: "App.ipa")
+
+        let id = try await client.uploadBlob(fileURL: file, fileName: "App.ipa") { _ in }
+
+        #expect(id == 4243)
     }
 
     @Test("Assignment rules use API v2 and PUT preserves unmodeled fields")

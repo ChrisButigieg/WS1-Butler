@@ -26,8 +26,9 @@ assign, and retire internal applications.
 1. **Applications › Native** — drop the .ipa files (or **Browse for IPAs…**).
 2. Choose **Target Servers** and **Mission Parameters**:
    - *Retire previous version* — retires the old version after the new one is published.
-   - *Review before publish* — pauses on each server so you can verify assignments
-     and edit app config values before publishing.
+   - *Review before publish* — stages the new version without copying assignments,
+     then pauses on each server so you can verify assignments and edit app config values
+     before anything is published or the prior version is retired.
    - *Auto-restore assignments* — re-applies the previous version's assignments if UEM
      didn't carry them over exactly.
    - *Create new apps* — off by default; upload apps that don't exist on a server yet.
@@ -38,7 +39,8 @@ assign, and retire internal applications.
    keeps a timestamped record and can be exported.
 
 Pipeline per app and server: authenticate → locate existing app → snapshot assignments and
-app config → upload → create version (`CarryOverAssignments`) → verify → review → publish → retire.
+app config → upload → create version → verify → review → publish → retire. When review is
+enabled, assignments are staged locally and applied only after approval.
 
 ## Security
 - Credentials live only in this Mac's Keychain (device-only, never synced or backed up).
