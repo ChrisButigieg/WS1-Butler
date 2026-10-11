@@ -294,7 +294,7 @@ struct UEMClientTests {
     @Test("Assignment rules use API v2 and PUT preserves unmodeled fields")
     func assignmentRules() async throws {
         let transport = MockTransport()
-        let ruleJSON = #"{"id":7,"assignments":[{"priority":0,"distribution":{"name":"G","smart_groups":["sg"],"app_delivery_method":"AUTO","application_configuration":[]},"tunnel":{"per_app_vpn_profile_uuid":"vpn-1"}}],"excluded_smart_groups":[]}"#
+        let ruleJSON = #"{"id":7,"assignments":[{"priority":0,"distribution":{"name":"G","smart_groups":["sg"],"app_delivery_method":"AUTO"},"application_configuration":[],"tunnel":{"per_app_vpn_profile_uuid":"vpn-1"}}],"excluded_smart_groups":[]}"#
         transport.handler = { request in request.httpMethod == "GET" ? .init(200, ruleJSON) : .init(202) }
         let client = try makeClient(transport: transport)
 
@@ -311,6 +311,39 @@ struct UEMClientTests {
         let sent = try JSONDecoder().decode(JSONValue.self, from: put.httpBody ?? Data())
         #expect(sent["assignments"]?.arrayValue?.first?["tunnel"]?["per_app_vpn_profile_uuid"] == .string("vpn-1"))
         #expect(sent["id"] == .int(7))
+    }
+
+    @Test("Smart Group search is scoped to the Organization Group and retrieves every page")
+    func smartGroupSearch() async throws {
+        let transport = MockTransport()
+        transport.handler = { request in
+            let queryItems = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let page = queryItems.first(where: { $0.name == "page" })?.value
+            switch page {
+            case "0":
+                return .init(200, #"{"Page":0,"PageSize":500,"Total":3,"SmartGroups":[{"Name":"Zulu","SmartGroupUuid":"sg-z"},{"Name":"Alpha","SmartGroupUuid":"sg-a"}]}"#)
+            case "1":
+                return .init(200, #"{"Page":1,"PageSize":500,"Total":3,"SmartGroups":[{"Name":"Bravo","SmartGroupUuid":"sg-b"}]}"#)
+            default:
+                Issue.record("Unexpected Smart Group page: \(page ?? "nil")")
+                return .init(500)
+            }
+        }
+        let client = try makeClient(transport: transport)
+
+        let groups = try await client.smartGroups()
+
+        #expect(groups.map(\.displayName) == ["Alpha", "Bravo", "Zulu"])
+        #expect(transport.requests.count == 2)
+        for (index, request) in transport.requests.enumerated() {
+            #expect(request.httpMethod == "GET")
+            #expect(request.value(forHTTPHeaderField: "Accept") == "application/json;version=1")
+            #expect(request.url?.path() == "/api/mdm/smartgroups/search")
+            let query = try #require(request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems })
+            #expect(query.contains(URLQueryItem(name: "organizationgroupid", value: "570")))
+            #expect(query.contains(URLQueryItem(name: "page", value: String(index))))
+            #expect(query.contains(URLQueryItem(name: "pagesize", value: "500")))
+        }
     }
 
     @Test("Empty assignment-rule responses become an empty rule")

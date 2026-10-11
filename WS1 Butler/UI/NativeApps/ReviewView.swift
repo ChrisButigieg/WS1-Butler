@@ -11,6 +11,9 @@ struct ReviewView: View {
     @State private var rule: AssignmentRuleDocument = .empty
     @State private var loaded = false
     @State private var confirmAbort = false
+    @State private var showingNewDistribution = false
+    @State private var distributionError = ""
+    @State private var showingDistributionError = false
 
     private var isInteractive: Bool { target.status == .awaitingReview && target.reviewGate != nil }
 
@@ -21,6 +24,13 @@ struct ReviewView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         summary
+                        if isInteractive {
+                            DistributionCreationPanel {
+                                showingNewDistribution = true
+                            }
+                        } else {
+                            ReviewClosedInfoPanel()
+                        }
                         if !target.discrepancies.isEmpty { discrepanciesPanel }
                         assignmentsPanel
                     }
@@ -51,6 +61,18 @@ struct ReviewView: View {
             Button("Abort", role: .destructive) { decide(.abort) }
         } message: {
             Text("The new version stays uploaded but unpublished, and the previous version remains active.")
+        }
+        .sheet(isPresented: $showingNewDistribution) {
+            NewDistributionEditorView(
+                smartGroups: target.availableSmartGroups,
+                unavailableSmartGroupUUIDs: rule.unavailableSmartGroupUUIDs,
+                onCreate: addDistribution
+            )
+        }
+        .alert("Distribution Not Added", isPresented: $showingDistributionError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(distributionError)
         }
     }
 
@@ -219,6 +241,57 @@ struct ReviewView: View {
         target.reviewGate?.resolve(decision)
         dismiss()
     }
+
+    private func addDistribution(_ distribution: NewDistribution) {
+        do {
+            try rule.appendDistribution(distribution)
+        } catch {
+            distributionError = error.localizedDescription
+            showingDistributionError = true
+        }
+    }
+}
+
+/// Prominent entry point for adding a distribution while the UEM publish step is paused.
+private struct DistributionCreationPanel: View {
+    let onCreate: () -> Void
+
+    var body: some View {
+        HUDPanel("New Distribution", accent: HUD.green) {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Configure the assignment before it is sent to UEM.", systemImage: "slider.horizontal.3")
+                    .font(.hud(.callout, weight: .semibold))
+                    .foregroundStyle(HUD.text)
+                Text("Add Smart Groups, delivery method, restrictions, and optional app configuration. These changes remain local until you select Approve & Publish.")
+                    .font(.callout)
+                    .foregroundStyle(HUD.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(action: onCreate) {
+                    Label("CREATE NEW DISTRIBUTION", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .hudPrimaryButton(tint: HUD.green)
+                .accessibilityIdentifier("createDistributionButton")
+            }
+        }
+    }
+}
+
+/// Explains why historic deployment details cannot safely be edited after the publish decision.
+private struct ReviewClosedInfoPanel: View {
+    var body: some View {
+        HUDPanel("Distribution Editing", accent: HUD.amber) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("This deployment is read-only.", systemImage: "lock.fill")
+                    .font(.hud(.callout, weight: .semibold))
+                    .foregroundStyle(HUD.amber)
+                Text("To create or edit a distribution, enable Review before MDM publish before starting the deployment, then select Review before Approve & Publish.")
+                    .font(.callout)
+                    .foregroundStyle(HUD.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
 }
 
 /// One assignment group with its smart groups, delivery method, and app configuration.
@@ -250,6 +323,22 @@ private struct AssignmentCard: View {
 
             if !assignment.smartGroupUUIDs.isEmpty {
                 FlowChips(items: assignment.smartGroupUUIDs.map(smartGroupName))
+            }
+
+            if !assignment.description.isEmpty {
+                Text(assignment.description)
+                    .font(.callout)
+                    .foregroundStyle(HUD.dim)
+            }
+
+            if let effectiveDate = assignment.effectiveDate, !effectiveDate.isEmpty {
+                Label("Begins \(effectiveDate)", systemImage: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(HUD.teal)
+            }
+
+            if assignment.restrictions.hasValues {
+                AssignmentRestrictionSummaryView(restrictions: assignment.restrictions)
             }
 
             if assignment.configuration.isEmpty {
@@ -326,6 +415,46 @@ private struct AssignmentCard: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+    }
+}
+
+private struct AssignmentRestrictionSummaryView: View {
+    let restrictions: AssignmentRestrictionSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Restrictions")
+                .font(.hud(.caption2, weight: .bold))
+                .tracking(1)
+                .foregroundStyle(HUD.dim)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { statusLabels }
+                VStack(alignment: .leading, spacing: 4) { statusLabels }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusLabels: some View {
+        RestrictionStatusLabel(title: "Remove on unenroll", value: restrictions.removeOnUnenroll)
+        RestrictionStatusLabel(title: "Prevent removal", value: restrictions.preventRemoval)
+        RestrictionStatusLabel(title: "Prevent backup", value: restrictions.preventApplicationBackup)
+        RestrictionStatusLabel(title: "MDM managed", value: restrictions.makeAppMDMManaged)
+    }
+}
+
+private struct RestrictionStatusLabel: View {
+    let title: String
+    let value: Bool?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: value == true ? "checkmark.circle.fill" : "circle")
+            Text(title)
+        }
+        .font(.caption)
+        .foregroundStyle(value == true ? HUD.green : HUD.dim)
+        .accessibilityLabel("\(title): \(value == true ? "on" : "off")")
     }
 }
 

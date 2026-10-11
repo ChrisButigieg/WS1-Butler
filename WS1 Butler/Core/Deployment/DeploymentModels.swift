@@ -157,6 +157,8 @@ final class DeploymentTarget: Identifiable {
     var workingRule: AssignmentRuleDocument?
     var discrepancies: [AssignmentDiscrepancy] = []
     var restoredFromPrevious = false
+    /// Smart Groups returned for this server's Organization Group and available to a new distribution.
+    var availableSmartGroups: [UEMSmartGroup] = []
     var smartGroupNames: [String: String] = [:]
     var reviewGate: ReviewGate?
 
@@ -182,6 +184,8 @@ final class DeploymentTarget: Identifiable {
         workingRule = nil
         discrepancies = []
         restoredFromPrevious = false
+        availableSmartGroups = []
+        smartGroupNames = [:]
         reviewGate = nil
         startedAt = nil
         finishedAt = nil

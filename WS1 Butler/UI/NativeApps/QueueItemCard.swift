@@ -160,7 +160,7 @@ struct TargetRow: View {
             StatusChip(status: target.status)
             if target.status == .awaitingReview {
                 Button(action: onReview) {
-                    Label("REVIEW", systemImage: "checklist")
+                    Label("REVIEW & CONFIGURE", systemImage: "checklist")
                 }
                 .hudPrimaryButton(tint: HUD.amber)
                 .accessibilityIdentifier("reviewButton.\(target.server.displayName)")

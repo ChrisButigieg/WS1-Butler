@@ -10,7 +10,7 @@ final class MockUEMService: UEMService {
     var organizationGroup = UEMOrganizationGroup(name: "AFRC Mobility", groupID: "AFRC", entityID: .init(value: 570), uuid: "og-uuid")
     var existingApps: [UEMApplication] = []
     var rules: [String: AssignmentRuleDocument] = [:]
-    var smartGroups: [String: String] = [:]
+    var availableSmartGroups: [UEMSmartGroup] = []
     var newAppTemplate = UEMApplication(entityID: .init(value: 2002), uuid: "new-app-uuid")
     /// Simulates a successful create response that omits the new application's identity.
     var beginInstallResponseOverride: UEMApplication?
@@ -18,6 +18,7 @@ final class MockUEMService: UEMService {
     var carriedRuleOverride: AssignmentRuleDocument?
 
     var failAuthentication: Error?
+    var failSmartGroupSearch: Error?
     var failBeginInstall: Error?
     var failRetire: Error?
     var failUpload: Error?
@@ -69,9 +70,10 @@ final class MockUEMService: UEMService {
         rules[appUUID] = rule
     }
 
-    func smartGroupNames() async throws -> [String: String] {
-        calls.append("smartGroupNames")
-        return smartGroups
+    func smartGroups() async throws -> [UEMSmartGroup] {
+        calls.append("smartGroups")
+        if let failSmartGroupSearch { throw failSmartGroupSearch }
+        return availableSmartGroups
     }
 
     func uploadBlob(fileURL: URL, fileName: String, progress: @escaping @Sendable (Double) -> Void) async throws -> Int {
@@ -126,13 +128,19 @@ final class MockUEMService: UEMService {
                         "name": .string("Flight Line iPads"),
                         "smart_groups": .array([.string("sg-flightline")]),
                         "app_delivery_method": .string("AUTO"),
-                        "keep_app_updated_automatically": .bool(true),
-                        "application_configuration": .array([
-                            .object(["key": .string("ServerURL"), "value": .string(configValue), "type": .string("STRING"), "id": .int(5)]),
-                            .object(["key": .string("EnableLogging"), "value": .string("false"), "type": .string("BOOLEAN"), "id": .int(6)])
-                        ])
+                        "keep_app_updated_automatically": .bool(true)
                     ]),
-                    "restriction": .object(["remove_on_unenroll": .bool(true), "managed_access": .bool(true)])
+                    "restriction": .object([
+                        "remove_on_unenroll": .bool(true),
+                        "prevent_removal": .bool(false),
+                        "prevent_application_backup": .bool(true),
+                        "make_app_mdm_managed": .bool(true),
+                        "managed_access": .bool(true)
+                    ]),
+                    "application_configuration": .array([
+                        .object(["key": .string("ServerURL"), "value": .string(configValue), "type": .string("STRING"), "id": .int(5)]),
+                        .object(["key": .string("EnableLogging"), "value": .string("false"), "type": .string("BOOLEAN"), "id": .int(6)])
+                    ])
                 ]),
                 .object([
                     "priority": .int(1),
@@ -161,7 +169,11 @@ final class MockUEMService: UEMService {
         let mock = MockUEMService()
         mock.existingApps = [sampleExistingApp(bundleID: bundleID)]
         mock.rules["old-app-uuid"] = sampleRule()
-        mock.smartGroups = ["sg-flightline": "Flight Line iPads", "sg-maint": "Maintainers", "sg-qa": "QA Testers"]
+        mock.availableSmartGroups = [
+            .init(name: "Flight Line iPads", smartGroupUUID: "sg-flightline"),
+            .init(name: "Maintainers", smartGroupUUID: "sg-maint"),
+            .init(name: "QA Testers", smartGroupUUID: "sg-qa")
+        ]
         return mock
     }
 }

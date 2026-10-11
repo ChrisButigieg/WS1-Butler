@@ -118,12 +118,38 @@ final class DeploymentEngine {
         }
 
         try await step(.snapshot, target, source) {
-            guard let uuid = target.previousApp?.uuid else { return .skipped("Nothing to snapshot") }
+            let smartGroupCount: Int
+            if options.reviewBeforePublish {
+                // This is a required preflight for the review editor. Do not turn an API or
+                // permissions failure into an empty picker: that would let an operator upload
+                // an app and reach review without any assignment targets to select.
+                // Keep the endpoint path visible without recording a server URL, credentials,
+                // tenant code, or other sensitive request data.
+                log.record(.info, "SMART GROUPS: GET /api/mdm/smartgroups/search", source: source)
+                let smartGroups = try await service.smartGroups()
+                target.availableSmartGroups = smartGroups
+                target.smartGroupNames = Dictionary(
+                    smartGroups.map { ($0.id, $0.displayName) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                smartGroupCount = smartGroups.count
+                let level: LogLevel = smartGroups.isEmpty ? .warning : .info
+                log.record(level, "SMART GROUPS: Loaded \(smartGroupCount) assignment target(s)", source: source)
+            } else {
+                smartGroupCount = 0
+            }
+
+            guard let uuid = target.previousApp?.uuid else {
+                let message = options.reviewBeforePublish
+                    ? "No previous assignments; \(smartGroupCount) Smart Group(s) available for review"
+                    : "No previous assignments"
+                return .skipped(message)
+            }
             let rule = try await service.assignmentRule(appUUID: uuid)
             target.expectedRule = rule
-            target.smartGroupNames = (try? await service.smartGroupNames()) ?? [:]
             let configCount = rule.assignments.reduce(0) { $0 + $1.configuration.count }
-            return .done("\(rule.assignments.count) assignment group(s), \(configCount) app config key(s)")
+            let message = "\(rule.assignments.count) assignment group(s), \(configCount) app config key(s)"
+            return .done(options.reviewBeforePublish ? "\(message), \(smartGroupCount) Smart Group(s)" : message)
         }
 
         var blobID: Int?
@@ -202,8 +228,8 @@ final class DeploymentEngine {
             let gate = ReviewGate()
             target.reviewGate = gate
             target.status = .awaitingReview
-            target.detail = "Awaiting operator review"
-            log.record(.info, "Awaiting operator review", source: source)
+            target.detail = "Awaiting review — configure distributions or approve"
+            log.record(.info, "Awaiting review — configure distributions or approve", source: source)
             let decision = await gate.wait()
             target.reviewGate = nil
             target.status = .running

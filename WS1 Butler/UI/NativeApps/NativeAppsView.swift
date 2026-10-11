@@ -335,7 +335,21 @@ private struct OptionsPanel: View {
         HUDPanel("Mission Parameters") {
             VStack(alignment: .leading, spacing: 12) {
                 option("Retire previous version", "After the new version is published.", $options.retirePreviousVersion)
-                option("Review before publish", "Stage without assignments; verify before publishing or retiring.", $options.reviewBeforePublish)
+                option("Review before MDM publish", "Required to create or edit a distribution after upload. Changes remain local until you select Approve & Publish.", $options.reviewBeforePublish)
+                if !options.reviewBeforePublish {
+                    Label("Distribution setup is unavailable while automatic publishing is enabled.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(HUD.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        options.reviewBeforePublish = true
+                    } label: {
+                        Label("ENABLE REVIEW BEFORE MDM PUBLISH", systemImage: "checklist")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .hudPrimaryButton(tint: HUD.amber)
+                    .accessibilityIdentifier("enableReviewBeforePublishButton")
+                }
                 option("Auto-restore assignments", "Re-apply the previous version's assignments if UEM did not carry them over exactly.", $options.restoreAssignmentsIfMissing)
                 option("Create new apps", "Upload even when the app doesn't exist on a server yet.", $options.allowNewApplications)
             }

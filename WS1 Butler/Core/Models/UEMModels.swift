@@ -379,18 +379,40 @@ nonisolated struct UEMOrganizationGroupSearchResult: Codable, Sendable {
     enum CodingKeys: String, CodingKey { case locationGroups = "LocationGroups" }
 }
 
-nonisolated struct UEMSmartGroupSearchResult: Codable, Sendable {
-    nonisolated struct SmartGroup: Codable, Sendable {
-        var name: String?
-        var smartGroupUUID: String?
-        enum CodingKeys: String, CodingKey {
-            case name = "Name"
-            case smartGroupUUID = "SmartGroupUuid"
-        }
+/// A Smart Group eligible to be selected in an application assignment.
+nonisolated struct UEMSmartGroup: Codable, Hashable, Sendable, Identifiable {
+    var name: String?
+    var smartGroupUUID: String?
+    var managedByOrganizationGroupName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case smartGroupUUID = "SmartGroupUuid"
+        case managedByOrganizationGroupName = "ManagedByOrganizationGroupName"
     }
 
-    var smartGroups: [SmartGroup]?
-    enum CodingKeys: String, CodingKey { case smartGroups = "SmartGroups" }
+    /// Assignment-rule APIs identify Smart Groups by UUID, not numeric SmartGroupID.
+    var id: String { smartGroupUUID?.lowercased() ?? "" }
+
+    var displayName: String {
+        name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? (name ?? id)
+            : id
+    }
+}
+
+nonisolated struct UEMSmartGroupSearchResult: Codable, Sendable {
+    var page: Int?
+    var pageSize: Int?
+    var total: Int?
+    var smartGroups: [UEMSmartGroup]?
+
+    enum CodingKeys: String, CodingKey {
+        case page = "Page"
+        case pageSize = "PageSize"
+        case total = "Total"
+        case smartGroups = "SmartGroups"
+    }
 }
 
 /// Body for `POST /api/mam/apps/internal/begininstall`.

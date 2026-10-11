@@ -32,7 +32,7 @@ protocol UEMService: AnyObject {
     func findInternalApps(bundleID: String) async throws -> [UEMApplication]
     func assignmentRule(appUUID: String) async throws -> AssignmentRuleDocument
     func updateAssignmentRule(appUUID: String, rule: AssignmentRuleDocument) async throws
-    func smartGroupNames() async throws -> [String: String]
+    func smartGroups() async throws -> [UEMSmartGroup]
     func uploadBlob(fileURL: URL, fileName: String, progress: @escaping @Sendable (Double) -> Void) async throws -> Int
     func deleteBlob(id: Int) async throws
     func beginInstall(_ request: BeginInstallRequest) async throws -> UEMApplication
@@ -112,17 +112,47 @@ final class UEMClient: UEMService {
                               version: 2, body: body, retryable: false)
     }
 
-    func smartGroupNames() async throws -> [String: String] {
-        let data = try await perform(.get, "/api/mdm/smartgroups/search", query: [
-            URLQueryItem(name: "pagesize", value: "1000")
-        ], version: 1)
-        guard !data.isEmpty else { return [:] }
-        let groups = try decode(UEMSmartGroupSearchResult.self, from: data).smartGroups ?? []
-        var names: [String: String] = [:]
-        for group in groups {
-            if let uuid = group.smartGroupUUID?.lowercased(), let name = group.name { names[uuid] = name }
+    func smartGroups() async throws -> [UEMSmartGroup] {
+        let pageSize = 500
+        // UEM numbers Smart Group result pages from zero. Starting at page one skips the
+        // entire result set for tenants whose groups fit on the first page.
+        var page = 0
+        var fetched = 0
+        var groups: [UEMSmartGroup] = []
+        var knownUUIDs: Set<String> = []
+
+        // Follow the server's result count rather than imposing a client-side page cap:
+        // every Smart Group returned for this Organization Group must be available in review.
+        while true {
+            let data = try await perform(.get, "/api/mdm/smartgroups/search", query: [
+                URLQueryItem(name: "organizationgroupid", value: String(server.organizationGroupID)),
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "pagesize", value: String(pageSize))
+            ], version: 1)
+            guard !data.isEmpty else { break }
+
+            let response = try decode(UEMSmartGroupSearchResult.self, from: data)
+            let pageGroups = response.smartGroups ?? []
+            guard !pageGroups.isEmpty else { break }
+            fetched += pageGroups.count
+
+            var addedGroup = false
+            for group in pageGroups {
+                guard !group.id.isEmpty, knownUUIDs.insert(group.id).inserted else { continue }
+                groups.append(group)
+                addedGroup = true
+            }
+
+            if let total = response.total, fetched >= total { break }
+            if response.total == nil, pageGroups.count < pageSize { break }
+            /// Some older tenants ignore the page parameter. Stop rather than loop over a duplicate page.
+            guard addedGroup else { break }
+            page += 1
         }
-        return names
+
+        return groups.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
     }
 
     func uploadBlob(fileURL: URL, fileName: String, progress: @escaping @Sendable (Double) -> Void) async throws -> Int {

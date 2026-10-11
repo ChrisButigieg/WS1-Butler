@@ -30,7 +30,6 @@ struct DeploymentEngineTests {
             "testConnection",
             "findInternalApps",
             "assignmentRule:old-app-uuid",
-            "smartGroupNames",
             "uploadBlob:MissionPlanner.ipa",
             "beginInstall",
             "assignmentRule:new-app-uuid",
@@ -78,6 +77,91 @@ struct DeploymentEngineTests {
         #expect(request.pushMode == "OnDemand")
         #expect(request.applicationName == "Mission Planner")
         #expect(request.supportedModels.model?.compactMap(\.modelID) == [1, 3, 2])
+    }
+
+    @Test("Stops before upload when the Smart Group preflight cannot load assignment targets")
+    func stopsBeforeUploadWhenSmartGroupSearchFails() async {
+        let mock = MockUEMService.populated(bundleID: bundleID)
+        mock.failSmartGroupSearch = UEMError.http(status: 403, message: "Smart Group access denied", activityID: nil)
+
+        let target = await run(mock, options: DeploymentOptions())
+
+        #expect(target.status == .failed("HTTP 403: Smart Group access denied"))
+        #expect(target.state(of: .snapshot) == .failed)
+        #expect(mock.calls == ["testConnection", "findInternalApps", "smartGroups"])
+        #expect(mock.beginInstallRequests.isEmpty)
+        #expect(mock.publishedRules.isEmpty)
+    }
+
+    @Test("New application distributions remain local until the operator approves publishing")
+    func newApplicationReviewDistribution() async throws {
+        let mock = MockUEMService()
+        mock.availableSmartGroups = [
+            .init(name: "Test Devices", smartGroupUUID: "sg-test")
+        ]
+        let engine = DeploymentEngine(log: ActivityLog()) { _ in mock }
+        let target = DeploymentTarget(server: TestSupport.server())
+        var options = DeploymentOptions()
+        options.allowNewApplications = true
+
+        let task = Task {
+            await engine.run(
+                item: TestSupport.queueItem(bundleID: bundleID),
+                target: target,
+                options: options
+            )
+        }
+
+        await TestSupport.waitUntil { target.status == .awaitingReview }
+        #expect(target.previousApp == nil)
+        #expect(target.availableSmartGroups.map(\.id) == ["sg-test"])
+        #expect(mock.publishedRules.isEmpty)
+
+        var rule = try #require(target.workingRule)
+        try rule.appendDistribution(
+            NewDistribution(
+                assignmentName: "New app pilot",
+                smartGroupUUIDs: ["sg-test"],
+                sendConfiguration: true,
+                configuration: [
+                    NewAppConfiguration(key: "Endpoint", value: "https://config.example", type: .string)
+                ]
+            )
+        )
+        #expect(mock.publishedRules.isEmpty)
+
+        target.reviewGate?.resolve(.publish(rule))
+        await task.value
+
+        let published = try #require(mock.publishedRules["new-app-uuid"])
+        let assignment = try #require(published.raw["assignments"]?.arrayValue?.first)
+        #expect(assignment["distribution"]?["name"] == .string("New app pilot"))
+        #expect(assignment["distribution"]?["smart_groups"] == .array([.string("sg-test")]))
+        #expect(assignment["application_configuration"]?.arrayValue?.first?["key"] == .string("Endpoint"))
+        #expect(target.state(of: .publish) == .done)
+    }
+
+    @Test("Logs the Smart Group preflight request and result before review")
+    func logsSmartGroupPreflight() async {
+        let mock = MockUEMService.populated(bundleID: bundleID)
+        let log = ActivityLog()
+        let engine = DeploymentEngine(log: log) { _ in mock }
+        let target = DeploymentTarget(server: TestSupport.server())
+
+        let task = Task {
+            await engine.run(
+                item: TestSupport.queueItem(bundleID: bundleID),
+                target: target,
+                options: DeploymentOptions()
+            )
+        }
+
+        await TestSupport.waitUntil { target.status == .awaitingReview }
+        #expect(log.entries.contains { $0.message == "SMART GROUPS: GET /api/mdm/smartgroups/search" })
+        #expect(log.entries.contains { $0.message == "SMART GROUPS: Loaded 3 assignment target(s)" })
+
+        target.reviewGate?.resolve(.skipPublish)
+        await task.value
     }
 
     @Test("Deletes the uploaded blob when version creation fails")

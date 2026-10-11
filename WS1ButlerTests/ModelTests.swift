@@ -73,7 +73,7 @@ struct AssignmentRuleTests {
         // Unknown fields (restriction block, config id) survive the edit.
         let first = try #require(rule.raw["assignments"]?.arrayValue?.first)
         #expect(first["restriction"]?["managed_access"] == .bool(true))
-        #expect(first["distribution"]?["application_configuration"]?.arrayValue?.first?["id"] == .int(5))
+        #expect(first["application_configuration"]?.arrayValue?.first?["id"] == .int(5))
         #expect(first["distribution"]?["keep_app_updated_automatically"] == .bool(true))
     }
 
@@ -97,7 +97,141 @@ struct AssignmentRuleTests {
         #expect(merged.raw["id"] == .int(500))
         #expect(merged.raw["uuid"] == .string("new-rule"))
         #expect(merged.assignments.count == 2)
-        #expect(merged.raw["assignments"]?.arrayValue?.first?["distribution"]?["application_configuration"]?.arrayValue?.first?["id"] == nil)
+        #expect(merged.raw["assignments"]?.arrayValue?.first?["application_configuration"]?.arrayValue?.first?["id"] == nil)
+    }
+
+    @Test("New distributions use the documented defaults and v2 payload shape")
+    func appendsNewDistribution() throws {
+        let defaults = NewDistribution(assignmentName: "New app assignment")
+        #expect(defaults.deliveryMethod == .automatic)
+        #expect(defaults.restrictions.removeOnUnenroll)
+        #expect(!defaults.restrictions.preventRemoval)
+        #expect(defaults.restrictions.preventApplicationBackup)
+        #expect(defaults.restrictions.makeAppMDMManaged)
+        #expect(!defaults.sendConfiguration)
+        #expect(abs(defaults.deploymentBeginning.timeIntervalSinceNow) < 5)
+
+        var rule = AssignmentRuleDocument.empty
+        try rule.appendDistribution(
+            NewDistribution(
+                assignmentName: "Test iPads",
+                assignmentDescription: "New deployment",
+                deploymentBeginning: Date(timeIntervalSince1970: 0),
+                deliveryMethod: .onDemand,
+                smartGroupUUIDs: ["SG-TEST"],
+                sendConfiguration: true,
+                configuration: [
+                    NewAppConfiguration(key: "ServerURL", value: "https://config.example", type: .string),
+                    NewAppConfiguration(key: "EnableLogging", value: "true", type: .boolean)
+                ]
+            )
+        )
+
+        let assignment = try #require(rule.raw["assignments"]?.arrayValue?.first)
+        #expect(assignment["priority"] == .int(0))
+        #expect(assignment["distribution"]?["name"] == .string("Test iPads"))
+        #expect(assignment["distribution"]?["description"] == .string("New deployment"))
+        #expect(assignment["distribution"]?["smart_groups"] == .array([.string("sg-test")]))
+        #expect(assignment["distribution"]?["app_delivery_method"] == .string("ON_DEMAND"))
+        #expect(assignment["distribution"]?["effective_date"]?.stringValue?.isEmpty == false)
+        #expect(assignment["restriction"]?["remove_on_unenroll"] == .bool(true))
+        #expect(assignment["restriction"]?["prevent_removal"] == .bool(false))
+        #expect(assignment["restriction"]?["prevent_application_backup"] == .bool(true))
+        #expect(assignment["restriction"]?["make_app_mdm_managed"] == .bool(true))
+        #expect(assignment["application_configuration"]?.arrayValue?.map { $0["key"]?.stringValue } == ["ServerURL", "EnableLogging"])
+        #expect(assignment["distribution"]?["application_configuration"] == nil)
+    }
+
+    @Test("New distributions preserve the operator's local deployment time and UTC offset")
+    func effectiveDateUsesSelectedTimeZone() throws {
+        let eastern = try #require(TimeZone(identifier: "America/New_York"))
+        let date = try #require(ISO8601DateFormatter().date(from: "2026-10-15T13:20:00Z"))
+
+        #expect(
+            AssignmentRuleDocument.effectiveDateString(date, timeZone: eastern)
+                == "2026-10-15T09:20:00.000-04:00"
+        )
+    }
+
+    @Test("Distribution names auto-fill from the first Smart Group and delivery method")
+    @MainActor
+    func automaticDistributionName() {
+        let draft = NewDistributionDraft()
+        draft[smartGroupSelected: "sg-t6", displayName: "SG_DAF_EFB_T6_PERSONA"] = true
+        #expect(draft.assignmentName == "DAF_EFB_T6_PERSONA_AUTO")
+
+        draft.deliveryMethod = .onDemand
+        #expect(draft.assignmentName == "DAF_EFB_T6_PERSONA_ONDEMAND")
+
+        draft.isNameOverrideEnabled = true
+        draft.assignmentName = "T6 Pilot"
+        draft.deliveryMethod = .automatic
+        #expect(draft.assignmentName == "T6 Pilot")
+
+        draft.isNameOverrideEnabled = false
+        #expect(draft.assignmentName == "DAF_EFB_T6_PERSONA_AUTO")
+    }
+
+    @Test("New distributions reject duplicate Smart Groups")
+    func rejectsDuplicateSmartGroups() {
+        let distribution = NewDistribution(
+            assignmentName: "Duplicate groups",
+            smartGroupUUIDs: ["SG-1", "sg-1"]
+        )
+
+        #expect(throws: NewDistributionValidationError.duplicateSmartGroups) {
+            try distribution.validate(usedSmartGroupUUIDs: [])
+        }
+    }
+
+    @Test("Configuration validation accepts only scalar values the editor can safely author")
+    func validatesSimpleConfiguration() {
+        let invalidBoolean = NewDistribution(
+            assignmentName: "Invalid Boolean",
+            smartGroupUUIDs: ["sg-1"],
+            sendConfiguration: true,
+            configuration: [NewAppConfiguration(key: "Enabled", value: "yes", type: .boolean)]
+        )
+        #expect(throws: NewDistributionValidationError.invalidConfigurationValue(key: "Enabled", type: AppConfigurationType.boolean)) {
+            try invalidBoolean.validate(usedSmartGroupUUIDs: [])
+        }
+
+        let nestedType = NewDistribution(
+            assignmentName: "Nested Type",
+            smartGroupUUIDs: ["sg-1"],
+            sendConfiguration: true,
+            configuration: [NewAppConfiguration(key: "Items", value: "one,two", type: .array)]
+        )
+        #expect(throws: NewDistributionValidationError.unsupportedConfigurationType(AppConfigurationType.array)) {
+            try nestedType.validate(usedSmartGroupUUIDs: [])
+        }
+    }
+
+    @Test("XML property-list import preserves scalar managed app configuration")
+    func importsXMLConfiguration() throws {
+        let xml = #"""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>EnableLogging</key>
+            <true/>
+            <key>RetryCount</key>
+            <integer>3</integer>
+            <key>ServerURL</key>
+            <string>https://config.example</string>
+        </dict>
+        </plist>
+        """#
+
+        let configurations = try AppConfigurationXMLImporter.configurations(from: Data(xml.utf8))
+        let values = Dictionary(uniqueKeysWithValues: configurations.map { ($0.key, $0) })
+        #expect(values["EnableLogging"]?.value == "true")
+        #expect(values["EnableLogging"]?.type == .boolean)
+        #expect(values["RetryCount"]?.value == "3")
+        #expect(values["RetryCount"]?.type == .integer)
+        #expect(values["ServerURL"]?.value == "https://config.example")
+        #expect(values["ServerURL"]?.type == .string)
     }
 }
 
