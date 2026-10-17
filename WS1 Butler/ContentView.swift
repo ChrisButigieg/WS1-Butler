@@ -156,11 +156,24 @@ struct RootView: View {
                     .font(.hud(.caption2, weight: .heavy))
                     .foregroundStyle(HUD.amber)
             }
+            AppVersionLabel()
         }
         .foregroundStyle(HUD.text)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AppVersionLabel: View {
+    private let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    private let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+
+    var body: some View {
+        Text(verbatim: "v\(shortVersion) (\(buildNumber))")
+            .font(.hud(.caption2, weight: .semibold))
+            .foregroundStyle(HUD.dim)
+            .accessibilityLabel("Version \(shortVersion), build \(buildNumber)")
     }
 }
 
